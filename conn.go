@@ -242,6 +242,9 @@ func processLoop(c *Conn, writer *frame.Writer) {
 			writeTimeoutChannel = nil
 
 		case f, ok := <-c.readCh:
+			if len(c.writeCh) >= 8{
+				continue
+			}
 			// stop the read timer
 			if readTimer != nil {
 				readTimer.Stop()
