@@ -160,7 +160,10 @@ func Connect(conn io.ReadWriteCloser, opts ...func(*Conn) error) (*Conn, error) 
 	// there is a real need for this.
 
 	go readLoop(c, reader)
-	go processLoop(c, writer)
+
+	channels := make(map[string]chan *frame.Frame)
+	go processReadChannelLoop(c, channels)
+	go processWriteChannelLoop(c, writer, channels)
 
 	return c, nil
 }
@@ -202,16 +205,11 @@ func readLoop(c *Conn, reader *frame.Reader) {
 	}
 }
 
-// processLoop is a goroutine that handles io with
-// the server.
-func processLoop(c *Conn, writer *frame.Writer) {
-	channels := make(map[string]chan *frame.Frame)
-
+// processReadChannelLoop is a goroutine that handles frames frome
+// the readloop
+func processReadChannelLoop(c *Conn, channels map[string]chan *frame.Frame) {
 	var readTimeoutChannel <-chan time.Time
 	var readTimer *time.Timer
-	var writeTimeoutChannel <-chan time.Time
-	var writeTimer *time.Timer
-
 	defer c.MustDisconnect()
 
 	for {
@@ -219,28 +217,13 @@ func processLoop(c *Conn, writer *frame.Writer) {
 			readTimer = time.NewTimer(c.readTimeout)
 			readTimeoutChannel = readTimer.C
 		}
-		if c.writeTimeout > 0 && writeTimer == nil {
-			writeTimer = time.NewTimer(c.writeTimeout)
-			writeTimeoutChannel = writeTimer.C
-		}
 
 		select {
 		case <-readTimeoutChannel:
 			// read timeout, close the connection
-			err := newErrorMessage("read timeout")
+			err := newErrorMessage("read timeout edwin")
 			sendError(channels, err)
 			return
-
-		case <-writeTimeoutChannel:
-			// write timeout, send a heart-beat frame
-			err := writer.Write(nil)
-			if err != nil {
-				sendError(channels, err)
-				return
-			}
-			writeTimer = nil
-			writeTimeoutChannel = nil
-
 		case f, ok := <-c.readCh:
 			// stop the read timer
 			if readTimer != nil {
@@ -295,7 +278,36 @@ func processLoop(c *Conn, writer *frame.Writer) {
 					}
 				}
 			}
+		}
+	}
+}
 
+// processWriteChannelLoop is a goroutine that handles the request which
+// want be sended to server
+
+func processWriteChannelLoop(c *Conn, writer *frame.Writer, channels map[string]chan *frame.Frame) {
+
+	var writeTimeoutChannel <-chan time.Time
+	var writeTimer *time.Timer
+
+	defer c.MustDisconnect()
+
+	for {
+		if c.writeTimeout > 0 && writeTimer == nil {
+			writeTimer = time.NewTimer(c.writeTimeout + time.Second)
+			writeTimeoutChannel = writeTimer.C
+		}
+
+		select {
+		case <-writeTimeoutChannel:
+			// write timeout, send a heart-beat frame
+			err := writer.Write(nil)
+			if err != nil {
+				sendError(channels, err)
+				return
+			}
+			writeTimer = nil
+			writeTimeoutChannel = nil
 		case req, ok := <-c.writeCh:
 			// stop the write timeout
 			if writeTimer != nil {
@@ -550,7 +562,7 @@ func (c *Conn) Ack(m *Message) error {
 	}
 
 	if f != nil {
-		c.sendFrame(f)
+		return c.sendFrame(f)
 	}
 	return nil
 }
